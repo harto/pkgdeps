@@ -29,6 +29,14 @@ Explore dependencies of this project::
       - sys
 
 
+Installation
+------------
+
+::
+
+    $ pip install pkgdeps
+
+
 Usage
 -----
 
