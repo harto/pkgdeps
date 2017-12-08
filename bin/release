@@ -1,0 +1,11 @@
+#!/usr/bin/env bash
+set -euo pipefail
+
+git diff-index --quiet HEAD || ( echo "uncomitted changes in repo; aborting" >&2; exit 1 )
+[[ -n $(git tag --points-at HEAD) ]] || ( echo "untagged release; aborting" >&2; exit 1 )
+
+[[ -x env/bin/python ]] || virtualenv -p python3.6 env
+env/bin/python setup.py bdist_wheel --universal
+
+[[ -x env/bin/twine ]] || env/bin/pip install twine
+env/bin/twine upload dist/*
