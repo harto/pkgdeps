@@ -10,8 +10,6 @@ This might be useful for:
 - analysis of 3rd-party dependencies
 - etc.
 
-Currently only tested with Python 3, against Python 3 packages.
-
 
 Examples
 --------
@@ -27,6 +25,17 @@ Explore dependencies of this project::
       - os
       - os.path
       - sys
+
+
+Limitations
+-----------
+
+- Only tested with Python 3 against Python 3 packages.
+- Doesn't handle conditional imports; all conditional branches are inspected.
+- Outputs imported module members: ``from os.path import join`` creates a
+  dependency on ``os.path.join``, but we probably only want ``os.path`` for e.g.
+  ``tsort`` output. However, internal dependencies are coarsened to the module
+  level.
 
 
 Installation

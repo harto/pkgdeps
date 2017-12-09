@@ -37,37 +37,36 @@ xmlrpc zipapp zipfile zipimport zlib
 '''.split())
 
 
-def is_package(pkg_path):
-    return os.path.exists(os.path.join(pkg_path, '__init__.py'))
-
-
-def names(import_):
-    """Get referenced module names from an import statement.
+def names(import_expr):
+    """Get referenced names from an import expression.
     """
-    if isinstance(import_, ast.Import):
-        return [alias.name for alias in import_.names]
-    return [f'{import_.module}.{alias.name}' for alias in import_.names]
+    if isinstance(import_expr, ast.Import):
+        return [alias.name for alias in import_expr.names]
+    else:  # ImportFrom
+        return [f'{import_expr.module}.{alias.name}' for alias in import_expr.names]
 
 
-def module_imports(module_path):
+def recursively_collect_imports(expr, acc=None):
+    if acc is None:
+        acc = []
+    for subexpr in expr.body:
+        if isinstance(subexpr, (ast.Import, ast.ImportFrom)):
+            acc.append(subexpr)
+        elif hasattr(subexpr, 'body'):
+            recursively_collect_imports(subexpr, acc)
+    return acc
+
+
+def imported_names(source_path):
     """Find top-level dependencies for module, recursing into expression bodies.
 
     Doesn't try to do anything smart with conditional imports; it includes all
     conditional branches.
     """
-    with open(module_path) as f:
+    with open(source_path) as f:
         source = f.read()
-    module = ast.parse(source, module_path)
-
-    def recursively_collect_imports(expr, acc=[]):
-        for subexpr in expr.body:
-            if isinstance(subexpr, (ast.Import, ast.ImportFrom)):
-                acc.append(subexpr)
-            elif hasattr(subexpr, 'body'):
-                recursively_collect_imports(subexpr, acc)
-        return acc
-
-    imports = recursively_collect_imports(module)
+    expr = ast.parse(source)
+    imports = recursively_collect_imports(expr)
     return reduce(list.__add__, [names(imp) for imp in imports], [])
 
 
@@ -96,11 +95,66 @@ def module_name(module_path, root_path):
     """
     module_relpath = os.path.relpath(module_path, os.path.dirname(root_path))
     parts = splitall(module_relpath)
-    if parts[-1] == '__init__.py':
-        del parts[-1]
-    else:
-        parts[-1] = os.path.splitext(parts[-1])[0]
+    parts[-1] = os.path.splitext(parts[-1])[0]
     return '.'.join(parts)
+
+
+def build_graph(package_name):
+    graph = {}
+
+    def normalize_name(imported_name):
+        """Given some imported name ``foo.bar.baz``, where ``foo`` is the
+        package under inspection, find the longest subname that maps to a module
+        or package. In other words, discard names imported from _within_ a
+        module, like ``foo.bar.baz.SomeClass``.
+        """
+        parts = imported_name.split('.')
+        if package_name != parts[0]:
+            return imported_name
+        while parts:
+            module_path = os.path.join(*parts) + '.py'
+            package_path = os.path.join(*(parts + ['__init__.py']))
+            if os.path.exists(module_path) or os.path.exists(package_path):
+                ret = '.'.join(parts)
+                return ret
+            parts.pop()
+        # No part of the name corresponded to a file. We're not a compiler, so
+        # just pretend we didn't see it.
+        return imported_name
+
+
+    for root, dirs, files in os.walk(package_name):
+        for file in files:
+            if not file.endswith('.py'):
+                continue
+            module_path = os.path.join(root, file)
+            names = set(normalize_name(name) for name in imported_names(module_path))
+            graph[module_name(module_path, package_name)] = names
+
+    return graph
+
+
+def filter_dependencies(graph, package_name, included_types):
+    def root_name(module_name):
+        return module_name.split('.', 1)[0]
+
+    def is_builtin(imported_name):
+        return root_name(imported_name) in BUILTINS
+
+    def is_3rd_party(imported_name):
+        return root_name(imported_name) not in BUILTINS \
+            and root_name(imported_name) != package_name
+
+    def is_internal(imported_name):
+        return root_name(imported_name) == package_name
+
+    def exclude(dep):
+        return (('builtin' not in included_types and is_builtin(dep)) or
+                ('3rd-party' not in included_types and is_3rd_party(dep)) or
+                ('internal' not in included_types and is_internal(dep)))
+
+    return {mod: [dep for dep in deps if not exclude(dep)]
+            for mod, deps in graph.items()}
 
 
 def normalize_module_names(graph, num_pkg_segments=None, num_dep_segments=None):
@@ -119,47 +173,6 @@ def normalize_module_names(graph, num_pkg_segments=None, num_dep_segments=None):
     for mod_name, deps in graph.items():
         normalized[normalize_name(mod_name, num_pkg_segments)].update(normalize_name(dep, num_dep_segments) for dep in deps)
     return normalized
-
-
-def build_graph(root_path, depth=None):
-    graph = {}
-
-    for root, dirs, files in os.walk(root_path):
-        for file in files:
-            if not file.endswith('.py'):
-                continue
-            module_path = os.path.join(root, file)
-            graph[module_name(module_path, root_path)] = module_imports(module_path)
-        # if '__pycache__' in dirs:
-        #     dirs.remove('__pycache__')
-
-    if depth is not None:
-        return normalize_graph(graph, depth)
-
-    return graph
-
-
-def filter_dependencies(graph, package_name, includes):
-    def root_name(module_name):
-        return module_name.split('.', 1)[0]
-
-    def is_builtin(module_name):
-        return root_name(module_name) in BUILTINS
-
-    def is_3rd_party(module_name):
-        return root_name(module_name) not in BUILTINS \
-            and root_name(module_name) != package_name
-
-    def is_internal(module_name):
-        return root_name(module_name) == package_name
-
-    def exclude(dep):
-        return (('builtin' not in includes and is_builtin(dep)) or
-                ('3rd-party' not in includes and is_3rd_party(dep)) or
-                ('internal' not in includes and is_internal(dep)))
-
-    return {mod: [dep for dep in deps if not exclude(dep)]
-            for mod, deps in graph.items()}
 
 
 def print_graph(graph, format):
@@ -199,14 +212,19 @@ def main():
 
     args = parser.parse_args()
 
-    if not is_package(args.package_root):
-        raise Exception(f'not an inspectable package: {args.package_root}')
+    if not os.path.exists(os.path.join(args.package_root, '__init__.py')):
+        raise Exception(f'not a package: {args.package_root}')
+
+    # this is kind of gross, but it simplifies path resolution (we can use
+    # package directory and name interchangeably)
+    os.chdir(os.path.dirname(args.package_root))
+    package_name = os.path.basename(args.package_root)
 
     includes = set([args.includes]) if args.includes else set(DEP_TYPES) - set(args.excludes)
 
-    graph = build_graph(args.package_root)
+    graph = build_graph(package_name)
+    graph = filter_dependencies(graph, package_name, includes)
     graph = normalize_module_names(graph, args.package_module_name_segments, args.dependency_module_name_segments)
-    graph = filter_dependencies(graph, os.path.basename(args.package_root), includes)
     print_graph(graph, format=args.format)
 
 

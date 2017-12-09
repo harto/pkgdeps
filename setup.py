@@ -5,8 +5,6 @@ import re
 package = 'pkgdeps'
 
 version = popen('git describe --tags').read().strip()
-if not re.match(r'^\d+\.\d+(\.\d+)?$', version):
-    raise Exception('unexpected version: %s' % version)
 
 with open('README.rst') as f:
     long_description = f.read()
