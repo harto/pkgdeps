@@ -217,7 +217,9 @@ def main():
 
     # this is kind of gross, but it simplifies path resolution (we can use
     # package directory and name interchangeably)
-    os.chdir(os.path.dirname(args.package_root))
+    package_parent_dir = os.path.dirname(args.package_root)
+    if package_parent_dir:
+        os.chdir(package_parent_dir)
     package_name = os.path.basename(args.package_root)
 
     includes = set([args.includes]) if args.includes else set(DEP_TYPES) - set(args.excludes)
